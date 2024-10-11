@@ -8,6 +8,10 @@ using Microsoft.Data.SqlClient;
 using Azure.AI.OpenAI;
 using Azure;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.ChatCompletion;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +19,11 @@ var builder = WebApplication.CreateBuilder(args);
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .AddEnvironmentVariables()
+    .Build();
 
 builder.Services.AddSingleton<IDatabaseService, DatabaseService>();
 builder.Services.AddSingleton<IVectorizationService, VectorizationService>();
@@ -27,6 +36,21 @@ builder.Services.AddSingleton<CosmosClient>((_) =>
     );
     return client;
 });
+
+//Singleton Kernel
+
+builder.Services.AddSingleton<Kernel>((_) =>
+{
+    IKernelBuilder kernelBuilder = Kernel.CreateBuilder();
+    kernelBuilder.AddAzureOpenAIChatCompletion(
+        deploymentName: builder.Configuration["AzureOpenAI:DeploymentName"]!,
+        endpoint: builder.Configuration["AzureOpenAI:Endpoint"]!,
+        apiKey: builder.Configuration["AzureOpenAI:ApiKey"]!
+    );
+    kernelBuilder.Plugins.AddFromType<DatabaseService>();
+    return kernelBuilder.Build();
+});
+
 
 builder.Services.AddSingleton<AzureOpenAIClient>((_) =>
 {
@@ -83,11 +107,18 @@ app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime
 app.MapPost("/Chat", async Task<string> (HttpRequest request) =>
 {
     var message = await Task.FromResult(request.Form["message"]);
-    
-    return "This endpoint is not yet available.";
+    var kernel = app.Services.GetRequiredService<Kernel>();
+    var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+    var executionSettings = new OpenAIPromptExecutionSettings
+    {
+        ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
+    };
+    var response = await chatCompletionService.GetChatMessageContentAsync(message.ToString(), executionSettings, kernel);
+    return response?.Content!;
 })
     .WithName("Chat")
     .WithOpenApi();
+
 
 app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
 {
